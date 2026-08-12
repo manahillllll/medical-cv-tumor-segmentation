@@ -1,7 +1,8 @@
 seed: 42
 
 data:
-  data_dir: "data/brats"
+  format: "h5_slices"   # "h5_slices" (Kaggle BraTS2020 per-slice .h5) or "nifti" (per-case folders)
+  data_dir: "data/brats2020_h5/BraTS2020_training_data/content/data"
   patch_size: [128, 128, 128]
   val_fraction: 0.15
   cache: false

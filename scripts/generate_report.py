@@ -2,12 +2,17 @@
 CLI wrapper around src/report.py: load a trained segmentation model + classifier,
 run one case through the full pipeline, and save the combined report figure.
 
-Usage:
+Usage (format="nifti" in config.yaml, --case_id is the case folder name):
     python scripts/generate_report.py --config config.yaml \
         --seg_checkpoint checkpoints/segmentation/best.pt \
         --cls_checkpoint checkpoints/classifier/best.pt \
-        --case_dir data/brats/case_001 \
+        --case_id case_001 \
         --class_names LGG HGG
+
+Usage (format="h5_slices", --case_id is "volume_<id>"):
+    python scripts/generate_report.py --case_id volume_100 \
+        --seg_checkpoint checkpoints/segmentation/best.pt \
+        --cls_checkpoint checkpoints/classifier/best.pt
 """
 from __future__ import annotations
 
@@ -20,11 +25,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.dataset import discover_cases, get_val_transforms
+from src.data.dataset import discover_cases, discover_h5_cases, get_h5_val_transforms, get_val_transforms
 from src.models.classifier import SegClassifier
 from src.models.unet3d import UNet3D
 from src.report import generate_report
-from src.utils import load_checkpoint
+from src.utils import load_checkpoint, to_plain_tensor
 
 
 def parse_args():
@@ -32,10 +37,27 @@ def parse_args():
     p.add_argument("--config", type=str, default="config.yaml")
     p.add_argument("--seg_checkpoint", type=str, required=True)
     p.add_argument("--cls_checkpoint", type=str, required=True)
-    p.add_argument("--case_dir", type=str, required=True)
+    p.add_argument("--case_id", type=str, required=True,
+                    help="Case folder name (format=nifti) or 'volume_<id>' (format=h5_slices)")
     p.add_argument("--class_names", nargs="+", default=["LGG", "HGG"])
     p.add_argument("--output", type=str, default="outputs/reports/report.png")
     return p.parse_args()
+
+
+def load_volume(data_dir: str, case_id: str, format: str) -> torch.Tensor:
+    if format == "h5_slices":
+        cases = {c["case_id"]: c for c in discover_h5_cases(data_dir)}
+        if case_id not in cases:
+            raise FileNotFoundError(f"Could not find case '{case_id}' under {data_dir}")
+        sample = get_h5_val_transforms()(cases[case_id])
+        return to_plain_tensor(sample["image"])
+
+    cases = {c.case_id: c for c in discover_cases(data_dir, require_label=False)}
+    if case_id not in cases:
+        raise FileNotFoundError(f"Could not find modality files for case '{case_id}' under {data_dir}")
+    case = cases[case_id]
+    sample = get_val_transforms()({"image": case.images, "label": case.label or case.images[0]})
+    return to_plain_tensor(sample["image"])
 
 
 def main():
@@ -44,17 +66,9 @@ def main():
         cfg = yaml.safe_load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    mcfg, icfg = cfg["model"], cfg["inference"]
+    dcfg, mcfg, icfg = cfg["data"], cfg["model"], cfg["inference"]
 
-    case_parent = str(Path(args.case_dir).parent)
-    case_name = Path(args.case_dir).name
-    cases = {c.case_id: c for c in discover_cases(case_parent, require_label=False)}
-    if case_name not in cases:
-        raise FileNotFoundError(f"Could not find modality files for case '{case_name}' under {case_parent}")
-    case = cases[case_name]
-
-    sample = get_val_transforms()({"image": case.images, "label": case.label or case.images[0]})
-    volume = sample["image"]
+    volume = load_volume(dcfg["data_dir"], args.case_id, dcfg.get("format", "nifti"))
 
     unet = UNet3D(in_channels=mcfg["in_channels"], num_classes=mcfg["num_seg_classes"],
                    base_filters=mcfg["base_filters"], depth=mcfg["depth"], dropout_p=mcfg["dropout_p"])

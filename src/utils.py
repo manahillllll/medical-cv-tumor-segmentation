@@ -8,6 +8,17 @@ import numpy as np
 import torch
 
 
+def to_plain_tensor(x: torch.Tensor) -> torch.Tensor:
+    """
+    Strip MONAI's MetaTensor wrapper (and its per-sample metadata dict) down to a
+    plain torch.Tensor. Necessary right after pulling a batch off the DataLoader:
+    MetaTensor's batched metadata doesn't collate reliably across randomly-cropped
+    patches with heterogeneous per-sample metadata (e.g. from RandCropByPosNegLabeld),
+    and propagating it through loss computations can raise on later ops like slicing.
+    """
+    return x.as_tensor() if hasattr(x, "as_tensor") else x
+
+
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)

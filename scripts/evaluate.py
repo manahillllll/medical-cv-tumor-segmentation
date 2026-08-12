@@ -22,7 +22,7 @@ from src.data.dataset import build_datasets
 from src.inference import sliding_window_inference
 from src.metrics import brats_region_dice, dice_score_per_class
 from src.models.unet3d import UNet3D
-from src.utils import load_checkpoint
+from src.utils import load_checkpoint, to_plain_tensor
 
 
 def parse_args():
@@ -42,7 +42,8 @@ def main():
     dcfg, mcfg, icfg = cfg["data"], cfg["model"], cfg["inference"]
 
     _, val_ds = build_datasets(dcfg["data_dir"], patch_size=tuple(dcfg["patch_size"]),
-                                val_fraction=dcfg["val_fraction"], cache=False)
+                                val_fraction=dcfg["val_fraction"], cache=False,
+                                format=dcfg.get("format", "nifti"))
 
     model = UNet3D(in_channels=mcfg["in_channels"], num_classes=mcfg["num_seg_classes"],
                     base_filters=mcfg["base_filters"], depth=mcfg["depth"], dropout_p=mcfg["dropout_p"])
@@ -53,8 +54,8 @@ def main():
     region_scores = []
 
     for sample in tqdm(val_ds, desc="evaluating"):
-        image = sample["image"]
-        label = sample["label"].squeeze(0)
+        image = to_plain_tensor(sample["image"])
+        label = to_plain_tensor(sample["label"]).squeeze(0)
 
         probs = sliding_window_inference(
             image, model, patch_size=tuple(icfg["patch_size"]), overlap=icfg["overlap"],

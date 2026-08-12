@@ -24,10 +24,17 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.data.dataset import discover_cases, get_classification_val_transforms, get_train_transforms
+from src.data.dataset import (
+    discover_cases,
+    discover_h5_cases,
+    get_classification_val_transforms,
+    get_h5_classification_val_transforms,
+    get_h5_train_transforms,
+    get_train_transforms,
+)
 from src.models.classifier import SegClassifier
 from src.models.unet3d import UNet3D
-from src.utils import load_checkpoint, save_checkpoint, set_seed
+from src.utils import load_checkpoint, save_checkpoint, set_seed, to_plain_tensor
 
 
 def parse_args():
@@ -46,7 +53,22 @@ def load_labels(csv_path: str) -> dict[str, int]:
     return labels
 
 
-def build_classification_dicts(data_dir: str, labels: dict[str, int]) -> list[dict]:
+def build_classification_dicts(data_dir: str, labels: dict[str, int], format: str = "nifti") -> list[dict]:
+    """
+    format="h5_slices": match labels by case_id "volume_<id>" (see discover_h5_cases).
+    Note the Kaggle h5_slices download does not itself ship grade/subtype labels —
+    you'll need a labels_csv sourced separately (e.g. official BraTS name_mapping /
+    survival CSVs) with case_ids in that same "volume_<id>" form.
+    """
+    if format == "h5_slices":
+        cases = discover_h5_cases(data_dir)
+        dicts = []
+        for c in cases:
+            if c["case_id"] not in labels:
+                continue
+            dicts.append({**c, "cls_label": labels[c["case_id"]]})
+        return dicts
+
     cases = discover_cases(data_dir, require_label=False)
     dicts = []
     for c in cases:
@@ -66,15 +88,28 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     dcfg, mcfg, tcfg = cfg["data"], cfg["model"], cfg["train_classifier"]
+    data_format = dcfg.get("format", "nifti")
     patch_size = tuple(dcfg["patch_size"])
     labels = load_labels(args.labels_csv)
-    data_dicts = build_classification_dicts(dcfg["data_dir"], labels)
+    data_dicts = build_classification_dicts(dcfg["data_dir"], labels, format=data_format)
+    if not data_dicts:
+        raise RuntimeError(
+            "No cases matched the labels CSV. Check that labels_csv case_ids match the "
+            "discovered case_ids (e.g. 'volume_<id>' for format=h5_slices)."
+        )
 
     n_val = max(1, int(len(data_dicts) * dcfg["val_fraction"]))
     val_dicts, train_dicts = data_dicts[:n_val], data_dicts[n_val:]
 
-    train_ds = Dataset(data=train_dicts, transform=get_train_transforms(patch_size))
-    val_ds = Dataset(data=val_dicts, transform=get_classification_val_transforms(patch_size))
+    if data_format == "h5_slices":
+        train_transforms = get_h5_train_transforms(patch_size)
+        val_transforms = get_h5_classification_val_transforms(patch_size)
+    else:
+        train_transforms = get_train_transforms(patch_size)
+        val_transforms = get_classification_val_transforms(patch_size)
+
+    train_ds = Dataset(data=train_dicts, transform=train_transforms)
+    val_ds = Dataset(data=val_dicts, transform=val_transforms)
     train_loader = DataLoader(train_ds, batch_size=tcfg["batch_size"], shuffle=True,
                                num_workers=dcfg["num_workers"], collate_fn=list_data_collate, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=tcfg["batch_size"], shuffle=False,
@@ -99,7 +134,7 @@ def main():
 
         pbar = tqdm(train_loader, desc=f"epoch {epoch} (encoder {'frozen' if model.freeze_encoder else 'trainable'})")
         for batch in pbar:
-            images = batch["image"].to(device)
+            images = to_plain_tensor(batch["image"]).to(device)
             cls_labels = torch.as_tensor(batch["cls_label"]).to(device)
 
             optimizer.zero_grad(set_to_none=True)
@@ -116,7 +151,7 @@ def main():
         correct, total = 0, 0
         with torch.no_grad():
             for batch in val_loader:
-                images = batch["image"].to(device)
+                images = to_plain_tensor(batch["image"]).to(device)
                 cls_label = torch.as_tensor(batch["cls_label"]).to(device)
                 _, cls_logits = model(images)
                 pred = cls_logits.argmax(dim=1)

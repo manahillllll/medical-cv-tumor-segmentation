@@ -27,7 +27,7 @@ from src.data.dataset import build_datasets
 from src.losses import DiceCELoss, compute_class_weights
 from src.metrics import brats_region_dice
 from src.models.unet3d import UNet3D
-from src.utils import save_checkpoint, set_seed
+from src.utils import save_checkpoint, set_seed, to_plain_tensor
 
 
 def parse_args():
@@ -48,7 +48,8 @@ def main():
     patch_size = tuple(dcfg["patch_size"])
 
     train_ds, val_ds = build_datasets(
-        dcfg["data_dir"], patch_size=patch_size, val_fraction=dcfg["val_fraction"], cache=dcfg["cache"]
+        dcfg["data_dir"], patch_size=patch_size, val_fraction=dcfg["val_fraction"], cache=dcfg["cache"],
+        format=dcfg.get("format", "nifti"),
     )
     train_loader = DataLoader(train_ds, batch_size=tcfg["batch_size"], shuffle=True,
                                num_workers=dcfg["num_workers"], drop_last=True,
@@ -86,7 +87,8 @@ def main():
 
         pbar = tqdm(batches, total=n_batches, desc=f"epoch {epoch}")
         for batch in pbar:
-            images, labels = batch["image"].to(device), batch["label"].to(device).squeeze(1)
+            images = to_plain_tensor(batch["image"]).to(device)
+            labels = to_plain_tensor(batch["label"]).to(device).squeeze(1)
 
             optimizer.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=tcfg["amp"]):
@@ -110,8 +112,8 @@ def main():
             region_dices = {"whole_tumor": [], "tumor_core": [], "enhancing_tumor": []}
             with torch.no_grad():
                 for val_batch in val_loader:
-                    image = val_batch["image"].to(device)
-                    label = val_batch["label"].to(device).squeeze(1).squeeze(0)
+                    image = to_plain_tensor(val_batch["image"]).to(device)
+                    label = to_plain_tensor(val_batch["label"]).to(device).squeeze(1).squeeze(0)
                     logits = model(image)
                     pred = logits.argmax(dim=1).squeeze(0)
                     regions = brats_region_dice(pred.cpu(), label.cpu())

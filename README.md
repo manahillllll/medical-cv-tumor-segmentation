@@ -16,13 +16,15 @@ Trained/evaluated on **[BraTS](http://braintumorsegmentation.org/)** (Brain Tumo
 Segmentation Challenge) — see [scripts/download_data.md](scripts/download_data.md)
 for how to get the data.
 
-> **Status:** the pipeline (model, losses, training, sliding-window inference,
-> uncertainty, Grad-CAM, report generation) is implemented and covered by
-> [tests/test_shapes.py](tests/test_shapes.py) — all 17 sanity tests pass on synthetic
-> data. It has not yet been trained on real BraTS data. The images below are generated
-> by the actual report pipeline on synthetic input and randomly-initialized (untrained)
-> weights, purely to show the *output format* — see [Results](#results) for where
-> real numbers will go once training is done.
+> **Status:** the full pipeline (model, losses, training, sliding-window inference,
+> uncertainty, Grad-CAM, report generation) is implemented, unit-tested on synthetic
+> data (20 passing tests in [tests/](tests/)), and **verified end-to-end against real
+> BraTS2020 data** (369 cases) — real volumes load correctly, a training step reduces
+> loss, and sliding-window inference + Dice metrics run on a real held-out scan. What
+> hasn't happened yet is a full-scale training run to convergence (this dev machine is
+> CPU-only; see [Results](#results)) — the images below are from the report pipeline
+> running on synthetic input and randomly-initialized weights, purely to show the
+> *output format* ahead of real numbers.
 
 ## Sample report output (illustrative — untrained weights, synthetic data)
 
@@ -75,7 +77,7 @@ config.yaml                  all hyperparameters in one place
 requirements.txt
 
 src/
-  data/dataset.py            BraTS case discovery + MONAI transforms (load, normalize, patch-sample)
+  data/dataset.py            BraTS case discovery + MONAI transforms (nifti and h5_slices formats)
   models/unet3d.py           3D U-Net, implemented from scratch
   models/classifier.py       classification head branching off the U-Net bottleneck
   losses.py                  Dice + cross-entropy combo loss, class weighting
@@ -87,15 +89,17 @@ src/
   utils.py                     seeding, checkpointing, mask-overlay visualization
 
 scripts/
-  download_data.md            how to get BraTS data (two routes, see below)
+  download_data.md            how to get BraTS data (3 routes, see below)
   train_segmentation.py       train the 3D U-Net
   train_classifier.py         train the classification head on a pretrained encoder
   evaluate.py                 full-volume Dice evaluation on the held-out split
   generate_report.py          run one case through the full pipeline, save the report figure
   generate_preview_assets.py  regenerate this README's illustrative images (no data needed)
 
-tests/test_shapes.py          synthetic-tensor sanity tests (no BraTS data required)
-assets/                       README images
+tests/                         synthetic-tensor sanity tests (no BraTS data required)
+config.yaml                    full-scale config (h5_slices format by default)
+config_cpu_smoketest.yaml      small/fast config for verifying the pipeline on a CPU-only machine
+assets/                        README images
 ```
 
 ## Setup
@@ -111,20 +115,29 @@ pip install -r requirements.txt
 ## Quick check it works (no data needed, ~10 seconds)
 
 ```bash
-pytest tests/test_shapes.py -v
+pytest tests/ -v
 ```
 
-This runs the full model/loss/sliding-window-inference/uncertainty/Grad-CAM stack on
-synthetic tensors and confirms every shape and gradient path is correct before you
-spend time on real training.
+This runs the full model/loss/sliding-window-inference/uncertainty/Grad-CAM/data-pipeline
+stack on synthetic tensors (including a synthetic `.h5` case) and confirms every shape
+and gradient path is correct before you spend time on real training.
 
 ## Getting the data
 
-See [scripts/download_data.md](scripts/download_data.md) for the full walkthrough.
-Short version: MONAI can auto-download `Task01_BrainTumour` (BraTS-derived, no
-registration) to get the segmentation pipeline running immediately; the official
-BraTS release (free, requires registration at Synapse) is needed for tumor
-grade/subtype labels used by the classifier.
+See [scripts/download_data.md](scripts/download_data.md) for the full walkthrough —
+three routes depending on what you need (fastest download vs. classification labels).
+This repo's `config.yaml` defaults to `data.format: "h5_slices"`, matching the
+[Kaggle "BraTS2020 Training Data"](https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation)
+repackaging (one `.h5` file per 2D slice rather than one NIfTI volume per modality);
+`format: "nifti"` is also supported for the official BraTS release or MONAI's
+auto-downloadable Decathlon mirror.
+
+No GPU yet? `config_cpu_smoketest.yaml` runs the identical pipeline at a much smaller
+scale so you can confirm real data loads and trains correctly in a couple of minutes
+on a CPU-only machine:
+```bash
+python scripts/train_segmentation.py --config config_cpu_smoketest.yaml
+```
 
 ## Running the full pipeline
 
@@ -143,8 +156,9 @@ grade/subtype labels used by the classifier.
    ```bash
    python scripts/evaluate.py --checkpoint checkpoints/segmentation/best.pt
    ```
-4. **Train the classifier** on top of the pretrained encoder (needs
-   `data/labels.csv` — see `download_data.md`):
+4. **Train the classifier** on top of the pretrained encoder (needs a labels CSV —
+   the `h5_slices` download doesn't ship grade/subtype labels itself, see
+   `download_data.md` Option C):
    ```bash
    python scripts/train_classifier.py --labels_csv data/labels.csv
    ```
@@ -154,12 +168,12 @@ grade/subtype labels used by the classifier.
    python scripts/generate_report.py \
      --seg_checkpoint checkpoints/segmentation/best.pt \
      --cls_checkpoint checkpoints/classifier/best.pt \
-     --case_dir data/brats/<case_id> \
+     --case_id volume_100 \
      --class_names LGG HGG
    ```
 
 All hyperparameters (patch size, batch size, learning rate, dropout, MC-sample count,
-etc.) live in `config.yaml` — edit that rather than script flags.
+data format/path, etc.) live in `config.yaml` — edit that rather than script flags.
 
 ## Why uncertainty and explainability matter here
 
@@ -177,9 +191,17 @@ skull or background? If the latter, something upstream is wrong.
 
 ## Results
 
-_To fill in after training on real BraTS data: per-subregion Dice (WT/TC/ET) vs.
-published BraTS baselines, a real reliability diagram + ECE, and example report
-outputs on real scans (replacing the synthetic-data illustrations above)._
+Pipeline correctness has been verified against real BraTS2020 data (369 cases,
+`format: "h5_slices"`): volumes load and reconstruct to the correct shape, a training
+step on a real patch reduces loss over 30 iterations without error, and sliding-window
+inference + Gaussian stitching + Dice scoring run end-to-end on a real held-out scan.
+That's a pipeline check, not a trained model — the Dice scores from that run are near
+zero, as expected from ~30 gradient steps on a toy-sized network on a CPU.
+
+_Still to fill in after a real training run (needs a GPU — this dev box is CPU-only):
+per-subregion Dice (WT/TC/ET) vs. published BraTS baselines, a real reliability diagram
++ ECE, and example report outputs on real scans (replacing the synthetic-data
+illustrations above)._
 
 ## Implemented from scratch vs. off-the-shelf
 
