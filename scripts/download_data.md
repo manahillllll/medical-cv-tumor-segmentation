@@ -94,22 +94,27 @@ data/brats/<case_id>/<case_id>_seg.nii.gz
 
 Then set `data.format: "nifti"` and `data.data_dir: "data/brats"` in `config.yaml`.
 
-## Option C — Official BraTS2020 release (needed for grade/subtype classification labels)
+## Option C — Official BraTS release (needed for grade/subtype classification labels)
 
-Neither of the above ships tumor grade labels. Get those from the official challenge,
-via CBICA's Image Processing Portal — **not Synapse**, which is what later BraTS years
-(2021+) use, but 2020 specifically is distributed through CBICA:
+Neither of the above ships tumor grade labels. Get those from the official challenge
+via **[synapse.org/brats](https://synapse.org/brats)** — this is the current, single
+access point for all BraTS challenge years. CBICA's old Image Processing Portal
+(`ipp.cbica.upenn.edu`), which used to host the BraTS2020-specific download and is
+what earlier revisions of this doc pointed to, is now **deprecated** and redirects
+to Synapse instead.
 
-1. Register at the
-   [BraTS2020 registration page](https://www.med.upenn.edu/cbica/brats2020/registration.html)
-   (free, requires creating a CBICA IPP account). Approval is manual and the BraTS
-   organizers note it can take **3-4 days**, so start this early if you want it.
-2. Once approved, you'll get download links for the training set: 369 cases, each a
-   folder with T1/T1ce/T2/FLAIR + segmentation NIfTI files (`format: "nifti"` in this
-   repo's terms), plus `name_mapping.csv` (HGG/LGG grade, 293 HGG / 76 LGG) and
-   `survival_info.csv` (survival-time labels, a second possible classification task).
-   See the [BraTS2020 data page](https://www.med.upenn.edu/cbica/brats2020/data.html)
-   for the full description.
+1. Create a free [Synapse](https://www.synapse.org) account, then go to
+   [synapse.org/brats](https://synapse.org/brats) and follow its instructions to
+   request access to the BraTS project/team for the year you want (BraTS2020 for the
+   HGG/LGG grade split used elsewhere in this doc, or a later year — Synapse access is
+   generally gated behind accepting a data use agreement, and may involve an approval
+   step; exact clicks change over time, so follow what the page shows you).
+2. Once access is granted, download the training set through Synapse's web UI or the
+   `synapseclient` Python package. You should get the same per-case structure as
+   before: a folder with T1/T1ce/T2/FLAIR + segmentation NIfTI files
+   (`format: "nifti"` in this repo's terms), plus a `name_mapping.csv` (grade:
+   BraTS2020 has 293 HGG / 76 LGG cases) and `survival_info.csv` (survival-time
+   labels — a second possible classification task).
 3. Point `config.yaml` at this download with `data.format: "nifti"` and
    `data.data_dir` set to wherever you extracted it.
 4. Build `data/labels.csv` with columns `case_id,label` using the folder names from
