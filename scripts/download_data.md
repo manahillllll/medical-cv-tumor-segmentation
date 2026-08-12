@@ -4,6 +4,35 @@ Three practical routes, in order of how much setup they need. `config.yaml`'s
 `data.format` field tells the loader which layout to expect (`"h5_slices"` or
 `"nifti"`).
 
+## Is the Kaggle h5-slices download (Option A) actually complete?
+
+Short answer: yes, for segmentation. The official BraTS2020 training release has
+**369 patient cases** ([CBICA data page](https://www.med.upenn.edu/cbica/brats2020/data.html)),
+and the Kaggle repackaging has exactly 369 `volume_*` cases too — same case count,
+same four modalities + segmentation per case. It's not missing patients.
+
+What it genuinely doesn't have:
+- **Tumor grade (HGG/LGG) labels.** Official BraTS2020 has 293 HGG / 76 LGG cases,
+  but that label lives in `name_mapping.csv`, which ships with the official download,
+  not with this Kaggle repackaging — see Option C below if you need it for the
+  classifier.
+- **Raw NIfTI volumes.** It's repackaged as 155 per-slice `.h5` files per case instead
+  of 4 NIfTI files + 1 segmentation NIfTI. `LoadBraTSH5Volumed` reconstructs the 3D
+  volume from those slices at load time, so this doesn't cost you anything
+  functionally, but it does mean the exact preprocessing the Kaggle uploader applied
+  (values are float, already somewhat intensity-adjusted) isn't independently
+  verified against the official release.
+- **The 125-case validation set** (unlabeled, used for the actual challenge
+  leaderboard) — not needed for your own train/val split, which this repo does out of
+  the 369 training cases regardless.
+
+If segmentation is your main goal, Option A (what you already have) is fine as-is.
+If you want the classifier trained on real grade labels, get the official download
+(Option C) — matching Kaggle's arbitrary `volume_N` numbering back to official
+`BraTS20_Training_XXX` patient IDs isn't independently confirmed anywhere, so the
+reliable path for labels is switching to the official raw NIfTI data directly
+(`format: "nifti"`) rather than trying to graft official labels onto the Kaggle case IDs.
+
 ## Option A — Kaggle "BraTS2020 Training Data" (h5 slices) — what this repo is configured for by default
 
 [kaggle.com/datasets/awsaf49/brats20-dataset-training-validation](https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation)
@@ -65,20 +94,28 @@ data/brats/<case_id>/<case_id>_seg.nii.gz
 
 Then set `data.format: "nifti"` and `data.data_dir: "data/brats"` in `config.yaml`.
 
-## Option C — Official BraTS release (needed for grade/subtype classification labels)
+## Option C — Official BraTS2020 release (needed for grade/subtype classification labels)
 
-Neither of the above ships tumor grade labels. Get those from the official challenge:
+Neither of the above ships tumor grade labels. Get those from the official challenge,
+via CBICA's Image Processing Portal — **not Synapse**, which is what later BraTS years
+(2021+) use, but 2020 specifically is distributed through CBICA:
 
-1. Register at the [Synapse BraTS page](https://www.synapse.org/brats) (free, requires
-   an account and accepting the data use agreement).
-2. Download the training set (BraTS 2020 ships an explicit HGG/LGG folder split,
-   which is the simplest classification label to start with).
-3. Build `data/labels.csv` with columns `case_id,label` (e.g. `volume_1,1` for HGG,
-   `volume_5,0` for LGG if using `format: "h5_slices"` case ids, or the NIfTI folder
-   name if using `format: "nifti"`) — matching case IDs between this label source and
-   whichever data source you used above is on you, since the two aren't
-   pre-mapped to each other.
-4. Pass it to `scripts/train_classifier.py --labels_csv data/labels.csv`.
+1. Register at the
+   [BraTS2020 registration page](https://www.med.upenn.edu/cbica/brats2020/registration.html)
+   (free, requires creating a CBICA IPP account). Approval is manual and the BraTS
+   organizers note it can take **3-4 days**, so start this early if you want it.
+2. Once approved, you'll get download links for the training set: 369 cases, each a
+   folder with T1/T1ce/T2/FLAIR + segmentation NIfTI files (`format: "nifti"` in this
+   repo's terms), plus `name_mapping.csv` (HGG/LGG grade, 293 HGG / 76 LGG) and
+   `survival_info.csv` (survival-time labels, a second possible classification task).
+   See the [BraTS2020 data page](https://www.med.upenn.edu/cbica/brats2020/data.html)
+   for the full description.
+3. Point `config.yaml` at this download with `data.format: "nifti"` and
+   `data.data_dir` set to wherever you extracted it.
+4. Build `data/labels.csv` with columns `case_id,label` using the folder names from
+   this download (e.g. `BraTS20_Training_001,1` for HGG) — read the grade straight out
+   of `name_mapping.csv`.
+5. Pass it to `scripts/train_classifier.py --labels_csv data/labels.csv`.
 
 ## Sanity-checking the download
 
