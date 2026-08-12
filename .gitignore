@@ -1,0 +1,13 @@
+/data/
+/checkpoints/
+/outputs/
+*.nii
+*.nii.gz
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+.claude/

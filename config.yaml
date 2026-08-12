@@ -1,0 +1,56 @@
+seed: 42
+
+data:
+  data_dir: "data/brats"
+  patch_size: [128, 128, 128]
+  val_fraction: 0.15
+  cache: false
+  num_workers: 4
+
+model:
+  in_channels: 4          # T1, T1ce, T2, FLAIR
+  num_seg_classes: 4      # background, necrotic core, edema, enhancing tumor
+  base_filters: 16
+  depth: 4
+  dropout_p: 0.2
+  num_cls_classes: 2      # e.g. LGG vs HGG grade; adjust to your label scheme
+  cls_dropout_p: 0.3
+
+loss:
+  weight_dice: 1.0
+  weight_ce: 1.0
+  include_background_in_dice: true
+
+train_segmentation:
+  batch_size: 2
+  num_epochs: 200
+  lr: 0.0002
+  weight_decay: 0.00001
+  amp: true
+  val_every: 5
+  overfit_single_batch: false   # set true for the milestone-2 sanity check
+  checkpoint_dir: "checkpoints/segmentation"
+  log_dir: "outputs/logs/segmentation"
+
+train_classifier:
+  batch_size: 4
+  num_epochs: 60
+  lr: 0.0001
+  weight_decay: 0.00001
+  freeze_encoder_epochs: 15   # train head with encoder frozen for N epochs, then unfreeze
+  seg_checkpoint: "checkpoints/segmentation/best.pt"
+  checkpoint_dir: "checkpoints/classifier"
+  log_dir: "outputs/logs/classifier"
+
+inference:
+  patch_size: [128, 128, 128]
+  overlap: 0.5
+  sliding_window_batch_size: 2
+
+uncertainty:
+  method: "mc_dropout"   # "mc_dropout" or "ensemble"
+  mc_samples: 20
+  ensemble_checkpoints: []   # paths to independently-trained classifier checkpoints, if method == ensemble
+
+report:
+  output_dir: "outputs/reports"
