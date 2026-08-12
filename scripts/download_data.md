@@ -122,6 +122,32 @@ to Synapse instead.
    of `name_mapping.csv`.
 5. Pass it to `scripts/train_classifier.py --labels_csv data/labels.csv`.
 
+### If you're using the BraTS 2023 Challenge data specifically (Synapse syn51156910)
+
+BraTS 2023 bundles 9 sub-challenges into one release; the task equivalent to BraTS2020
+(adult glioma segmentation, same 4 modalities) is **Task 1: Segmentation – Adult
+Glioma**. Two things to verify once you have access:
+
+- **Filenames may differ from BraTS2020's `_t1`/`_t1ce`/`_t2`/`_flair`/`_seg`
+  convention** — newer BraTS releases have used different modality suffixes. Check one
+  downloaded case's filenames against `MODALITIES` in `src/data/dataset.py` and adjust
+  if they don't match; `discover_cases()`'s glob patterns are the only thing that'd
+  need to change.
+- Whether this release still ships an HGG/LGG-style grade label the way BraTS2020's
+  `name_mapping.csv` did is not confirmed — check the Task 1 data description on
+  Synapse before assuming `data/labels.csv` can be built the same way.
+
+**License: this data is CC-BY-NC 4.0 (non-commercial use only).** If you train on it,
+any resulting writeup/publication must include the attribution statement Synapse
+requires:
+
+> Data used in this publication were obtained as part of the Brain Tumor Segmentation
+> (BraTS) Challenge project through Synapse ID: syn51156910.
+
+...plus citations to the BraTS flagship and challenge-specific manuscripts listed on
+Synapse's Data Access/Downloads page. See the full terms at
+[creativecommons.org/licenses/by-nc/4.0](https://creativecommons.org/licenses/by-nc/4.0/).
+
 ## Sanity-checking the download
 
 ```bash

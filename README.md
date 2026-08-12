@@ -132,6 +132,19 @@ repackaging (one `.h5` file per 2D slice rather than one NIfTI volume per modali
 `format: "nifti"` is also supported for the official BraTS release or MONAI's
 auto-downloadable Decathlon mirror.
 
+**Data license note:** the official BraTS releases distributed via Synapse (e.g. the
+BraTS 2023 Challenge data, Synapse project `syn51156910`) are **CC-BY-NC 4.0 —
+non-commercial use only**, and require the following attribution in any resulting
+publication/writeup:
+
+> Data used in this publication were obtained as part of the Brain Tumor Segmentation
+> (BraTS) Challenge project through Synapse ID: syn51156910.
+
+...plus citations to the BraTS flagship and challenge-specific manuscripts (listed on
+Synapse's Data Access/Downloads page) if you refer to the dataset in research output.
+See [scripts/download_data.md](scripts/download_data.md) for details and the
+Kaggle-repackaged data's own separate terms.
+
 No GPU yet? `config_cpu_smoketest.yaml` runs the identical pipeline at a much smaller
 scale so you can confirm real data loads and trains correctly in a couple of minutes
 on a CPU-only machine:
