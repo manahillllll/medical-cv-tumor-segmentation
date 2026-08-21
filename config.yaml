@@ -6,7 +6,7 @@ data:
   patch_size: [128, 128, 128]
   val_fraction: 0.15
   cache: false
-  num_workers: 4
+  num_workers: 8
 
 model:
   in_channels: 4          # T1, T1ce, T2, FLAIR

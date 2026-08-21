@@ -5,6 +5,10 @@ Milestone 2 sanity check: run with train_segmentation.overfit_single_batch: true
 config.yaml to confirm the model can drive loss to ~0 on a single batch before
 committing to a full training run.
 
+Auto-resumes from train_segmentation.checkpoint_dir/last.pt if it exists, picking up
+at the next epoch with model/optimizer/scheduler state restored -- safe to re-run this
+same command after an interruption or crash.
+
 Usage:
     python scripts/train_segmentation.py --config config.yaml
 """
@@ -24,10 +28,11 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.dataset import build_datasets
+from src.inference import sliding_window_inference
 from src.losses import DiceCELoss, compute_class_weights
 from src.metrics import brats_region_dice
 from src.models.unet3d import UNet3D
-from src.utils import save_checkpoint, set_seed, to_plain_tensor
+from src.utils import load_checkpoint, save_checkpoint, set_seed, to_plain_tensor
 
 
 def parse_args():
@@ -44,7 +49,7 @@ def main():
     set_seed(cfg["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    dcfg, mcfg, lcfg, tcfg = cfg["data"], cfg["model"], cfg["loss"], cfg["train_segmentation"]
+    dcfg, mcfg, lcfg, tcfg, icfg = cfg["data"], cfg["model"], cfg["loss"], cfg["train_segmentation"], cfg["inference"]
     patch_size = tuple(dcfg["patch_size"])
 
     train_ds, val_ds = build_datasets(
@@ -53,8 +58,10 @@ def main():
     )
     train_loader = DataLoader(train_ds, batch_size=tcfg["batch_size"], shuffle=True,
                                num_workers=dcfg["num_workers"], drop_last=True,
-                               collate_fn=list_data_collate)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=1)
+                               collate_fn=list_data_collate, pin_memory=True,
+                               persistent_workers=dcfg["num_workers"] > 0, prefetch_factor=4)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=2,
+                             pin_memory=True, persistent_workers=True)
 
     model = UNet3D(
         in_channels=mcfg["in_channels"], num_classes=mcfg["num_seg_classes"],
@@ -72,14 +79,25 @@ def main():
 
     writer = SummaryWriter(tcfg["log_dir"])
     best_dice = 0.0
+    start_epoch = 0
+    global_step = 0
+
+    last_ckpt_path = Path(tcfg["checkpoint_dir"]) / "last.pt"
+    if last_ckpt_path.exists():
+        state = load_checkpoint(last_ckpt_path, model, optimizer, map_location=device)
+        if "scheduler" in state:
+            scheduler.load_state_dict(state["scheduler"])
+        start_epoch = state["epoch"] + 1
+        best_dice = state.get("best_dice", 0.0)
+        global_step = state.get("global_step", 0)
+        print(f"Resuming from {last_ckpt_path} at epoch {start_epoch} (best_dice={best_dice:.4f})")
 
     overfit_batch = None
     if tcfg["overfit_single_batch"]:
         overfit_batch = next(iter(train_loader))
         print("Overfit-single-batch sanity check enabled.")
 
-    global_step = 0
-    for epoch in range(tcfg["num_epochs"]):
+    for epoch in range(start_epoch, tcfg["num_epochs"]):
         model.train()
         epoch_loss = 0.0
         batches = [overfit_batch] if overfit_batch is not None else train_loader
@@ -112,10 +130,16 @@ def main():
             region_dices = {"whole_tumor": [], "tumor_core": [], "enhancing_tumor": []}
             with torch.no_grad():
                 for val_batch in val_loader:
-                    image = to_plain_tensor(val_batch["image"]).to(device)
+                    # sliding-window rather than a single full-volume (240x240x155) forward
+                    # pass: lower peak memory/kernel duration, and matches evaluate.py/report.py.
+                    image = to_plain_tensor(val_batch["image"]).squeeze(0)
                     label = to_plain_tensor(val_batch["label"]).to(device).squeeze(1).squeeze(0)
-                    logits = model(image)
-                    pred = logits.argmax(dim=1).squeeze(0)
+                    probs = sliding_window_inference(
+                        image, model, patch_size=tuple(icfg["patch_size"]), overlap=icfg["overlap"],
+                        num_classes=mcfg["num_seg_classes"], device=device,
+                        batch_size=icfg["sliding_window_batch_size"],
+                    )
+                    pred = probs.argmax(dim=0)
                     regions = brats_region_dice(pred.cpu(), label.cpu())
                     for k, v in regions.items():
                         region_dices[k].append(v)
@@ -129,10 +153,13 @@ def main():
             if mean_overall > best_dice:
                 best_dice = mean_overall
                 save_checkpoint(Path(tcfg["checkpoint_dir"]) / "best.pt", model, optimizer, epoch,
-                                 extra={"val_dice": mean_dices})
+                                 extra={"val_dice": mean_dices, "best_dice": best_dice,
+                                        "scheduler": scheduler.state_dict(), "global_step": global_step})
                 print(f"  saved new best checkpoint (mean dice {mean_overall:.4f})")
 
-        save_checkpoint(Path(tcfg["checkpoint_dir"]) / "last.pt", model, optimizer, epoch)
+        save_checkpoint(Path(tcfg["checkpoint_dir"]) / "last.pt", model, optimizer, epoch,
+                         extra={"best_dice": best_dice, "scheduler": scheduler.state_dict(),
+                                "global_step": global_step})
 
     writer.close()
 
