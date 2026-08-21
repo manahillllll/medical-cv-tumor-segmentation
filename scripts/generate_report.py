@@ -1,18 +1,18 @@
 """
-CLI wrapper around src/report.py: load a trained segmentation model + classifier,
-run one case through the full pipeline, and save the combined report figure.
+CLI wrapper around src/report.py: load a trained segmentation model (and, if available,
+a trained classifier), run one case through the pipeline, and save the report figure.
 
 Usage (format="nifti" in config.yaml, --case_id is the case folder name):
     python scripts/generate_report.py --config config.yaml \
         --seg_checkpoint checkpoints/segmentation/best.pt \
-        --cls_checkpoint checkpoints/classifier/best.pt \
-        --case_id case_001 \
-        --class_names LGG HGG
+        --case_id case_001
 
 Usage (format="h5_slices", --case_id is "volume_<id>"):
     python scripts/generate_report.py --case_id volume_100 \
-        --seg_checkpoint checkpoints/segmentation/best.pt \
-        --cls_checkpoint checkpoints/classifier/best.pt
+        --seg_checkpoint checkpoints/segmentation/best.pt
+
+--cls_checkpoint is optional: pass it once a real classifier is trained (see README's
+scope note) to add the classification + confidence interval + Grad-CAM panel.
 """
 from __future__ import annotations
 
@@ -36,7 +36,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=str, default="config.yaml")
     p.add_argument("--seg_checkpoint", type=str, required=True)
-    p.add_argument("--cls_checkpoint", type=str, required=True)
+    p.add_argument("--cls_checkpoint", type=str, default=None,
+                    help="Optional: adds classification + Grad-CAM panel if provided")
     p.add_argument("--case_id", type=str, required=True,
                     help="Case folder name (format=nifti) or 'volume_<id>' (format=h5_slices)")
     p.add_argument("--class_names", nargs="+", default=["LGG", "HGG"])
@@ -74,15 +75,16 @@ def main():
                    base_filters=mcfg["base_filters"], depth=mcfg["depth"], dropout_p=mcfg["dropout_p"])
     load_checkpoint(args.seg_checkpoint, unet, map_location=device)
 
-    seg_classifier = SegClassifier(unet, num_classification_classes=mcfg["num_cls_classes"],
-                                    dropout_p=mcfg["cls_dropout_p"])
-    load_checkpoint(args.cls_checkpoint, seg_classifier, map_location=device)
-
-    gradcam_target_layer = seg_classifier.unet.encoders[-1].conv.block[3]
+    seg_classifier = gradcam_target_layer = None
+    if args.cls_checkpoint:
+        seg_classifier = SegClassifier(unet, num_classification_classes=mcfg["num_cls_classes"],
+                                        dropout_p=mcfg["cls_dropout_p"])
+        load_checkpoint(args.cls_checkpoint, seg_classifier, map_location=device)
+        gradcam_target_layer = seg_classifier.unet.encoders[-1].conv.block[3]
 
     result = generate_report(
         volume=volume,
-        seg_model=seg_classifier.unet,
+        seg_model=unet,
         seg_classifier=seg_classifier,
         gradcam_target_layer=gradcam_target_layer,
         class_names=args.class_names,
@@ -96,8 +98,9 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.figure.savefig(out_path, dpi=150)
     print(f"saved report to {out_path}")
-    print(f"predicted class: {args.class_names[result.predicted_class]} "
-          f"({result.confidence_pct:.1f}% +/- {result.confidence_half_width_pct:.1f}%)")
+    if result.predicted_class is not None:
+        print(f"predicted class: {args.class_names[result.predicted_class]} "
+              f"({result.confidence_pct:.1f}% +/- {result.confidence_half_width_pct:.1f}%)")
     print(f"tumor volumes (cm3): {result.tumor_volumes_cm3}")
 
 

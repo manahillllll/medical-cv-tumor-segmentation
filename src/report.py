@@ -1,7 +1,11 @@
 """
-Combined clinical-style report: one function that takes a raw scan plus trained
-models and produces a single figure with segmentation overlay, classification +
-confidence interval, uncertainty heatmap, and Grad-CAM explanation (milestone 8).
+Combined clinical-style report: one function that takes a raw scan plus a trained
+segmentation model and produces a figure with the segmentation overlay and a
+voxel-level uncertainty map. If a trained SegClassifier + Grad-CAM target layer are
+also supplied, the report additionally includes the classification decision (with a
+calibrated confidence interval) and its Grad-CAM explanation -- but this project ships
+without a trained classifier (no real tumor-grade labels for the data source used, see
+README), so `seg_classifier=None` is the normal/expected case here.
 """
 from __future__ import annotations
 
@@ -19,22 +23,38 @@ from .utils import overlay_mask_on_slice, voxel_count_to_cm3
 
 @dataclass
 class ReportResult:
-    segmentation: torch.Tensor          # (D, H, W) predicted class map
-    tumor_volumes_cm3: dict[str, float]  # per BraTS region
-    predicted_class: int
-    confidence_pct: float
-    confidence_half_width_pct: float
-    uncertainty_map: torch.Tensor       # (D, H, W)
-    gradcam_map: torch.Tensor           # (D, H, W)
+    segmentation: torch.Tensor            # (D, H, W) predicted class map
+    tumor_volumes_cm3: dict[str, float]    # per BraTS region
+    uncertainty_map: torch.Tensor         # (D, H, W)
     figure: plt.Figure
+    predicted_class: int | None = None
+    confidence_pct: float | None = None
+    confidence_half_width_pct: float | None = None
+    gradcam_map: torch.Tensor | None = None
+
+
+def _tumor_centered_patch_origin(seg_pred: torch.Tensor, patch_size: tuple[int, int, int],
+                                  volume_shape: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Patch origin centered on the tumor's centroid (falls back to volume center if empty)."""
+    d, h, w = volume_shape
+    pd, ph, pw = patch_size
+    tumor_voxels = (seg_pred > 0).nonzero()
+    if len(tumor_voxels) == 0:
+        center = torch.tensor([d, h, w], dtype=torch.float32) / 2
+    else:
+        center = tumor_voxels.float().mean(dim=0)
+    sd = int(min(max(0, center[0].item() - pd / 2), max(0, d - pd)))
+    sh = int(min(max(0, center[1].item() - ph / 2), max(0, h - ph)))
+    sw = int(min(max(0, center[2].item() - pw / 2), max(0, w - pw)))
+    return sd, sh, sw
 
 
 def generate_report(
     volume: torch.Tensor,
     seg_model: torch.nn.Module,
-    seg_classifier: torch.nn.Module,
-    gradcam_target_layer: torch.nn.Module,
-    class_names: list[str],
+    seg_classifier: torch.nn.Module | None = None,
+    gradcam_target_layer: torch.nn.Module | None = None,
+    class_names: list[str] | None = None,
     patch_size: tuple[int, int, int] = (128, 128, 128),
     overlap: float = 0.5,
     num_seg_classes: int = 4,
@@ -46,13 +66,16 @@ def generate_report(
 ) -> ReportResult:
     """
     volume: (C, D, H, W) all modalities for one scan, already preprocessed/normalized.
-    seg_model: trained UNet3D (for full-volume sliding-window segmentation).
-    seg_classifier: trained SegClassifier (for classification + uncertainty + Grad-CAM);
-        should share weights with seg_model's encoder for the report to be self-consistent.
+    seg_model: trained UNet3D (for full-volume sliding-window segmentation, and for
+        voxel-level MC-Dropout uncertainty over a tumor-centered patch).
+    seg_classifier, gradcam_target_layer, class_names: optional. When provided, adds a
+        classification decision (calibrated confidence interval) and its Grad-CAM
+        explanation to the report; when seg_classifier is None those panels are simply
+        omitted (segmentation + uncertainty only).
     """
     seg_model.to(device).eval()
-    seg_classifier.to(device).eval()
     volume = volume.to(device)
+    has_classifier = seg_classifier is not None
 
     # 1. Segmentation via sliding-window inference
     probs = sliding_window_inference(
@@ -68,23 +91,13 @@ def generate_report(
     }
     tumor_volumes_cm3 = {k: voxel_count_to_cm3(v, spacing_mm) for k, v in voxel_counts.items()}
 
-    # 2. Classification + MC-Dropout uncertainty (a center patch keeps this tractable;
-    #    swap in a tumor-centered crop if the scan's tumor location is known up front)
+    # 2. MC-Dropout over a tumor-centered patch (MC sampling the full volume N times is
+    #    too expensive; the segmentation itself already tells us where to focus).
     d, h, w = volume.shape[1:]
     pd, ph, pw = patch_size
-    sd, sh, sw = max(0, (d - pd) // 2), max(0, (h - ph) // 2), max(0, (w - pw) // 2)
+    sd, sh, sw = _tumor_centered_patch_origin(seg_pred, patch_size, (d, h, w))
     center_patch = volume[:, sd:sd + pd, sh:sh + ph, sw:sw + pw].unsqueeze(0)
 
-    def forward_cls(model, x):
-        _, cls_logits = model(x)
-        return cls_logits
-
-    mc_out = mc_dropout_predict(seg_classifier, center_patch, n_samples=mc_samples, forward_fn=forward_cls)
-    predicted_class = int(mc_out["mean_probs"].argmax(dim=1).item())
-    cls_samples = mc_out["all_samples"].squeeze(1)  # (N, num_classes)
-    conf_pct, half_width_pct = classification_confidence_interval(cls_samples, predicted_class)
-
-    # voxel-level epistemic uncertainty over the segmentation (separate MC pass on seg head)
     def forward_seg(model, x):
         return model(x)
 
@@ -93,13 +106,27 @@ def generate_report(
     uncertainty_map = torch.zeros((d, h, w), device=device)
     uncertainty_map[sd:sd + pd, sh:sh + ph, sw:sw + pw] = uncertainty_patch
 
-    # 3. Grad-CAM explanation for the predicted class
-    cam = GradCAM3D(seg_classifier, gradcam_target_layer)
-    gradcam_patch = cam(center_patch, class_idx=predicted_class)
-    gradcam_map = torch.zeros((d, h, w), device=device)
-    gradcam_map[sd:sd + pd, sh:sh + ph, sw:sw + pw] = gradcam_patch
+    predicted_class = confidence_pct = half_width_pct = None
+    gradcam_map = None
 
-    # 4. Assemble figure
+    if has_classifier:
+        seg_classifier.to(device).eval()
+
+        def forward_cls(model, x):
+            _, cls_logits = model(x)
+            return cls_logits
+
+        mc_out = mc_dropout_predict(seg_classifier, center_patch, n_samples=mc_samples, forward_fn=forward_cls)
+        predicted_class = int(mc_out["mean_probs"].argmax(dim=1).item())
+        cls_samples = mc_out["all_samples"].squeeze(1)  # (N, num_classes)
+        confidence_pct, half_width_pct = classification_confidence_interval(cls_samples, predicted_class)
+
+        cam = GradCAM3D(seg_classifier, gradcam_target_layer)
+        gradcam_patch = cam(center_patch, class_idx=predicted_class)
+        gradcam_map = torch.zeros((d, h, w), device=device)
+        gradcam_map[sd:sd + pd, sh:sh + ph, sw:sw + pw] = gradcam_patch
+
+    # 3. Assemble figure
     if slice_idx is None:
         tumor_voxels = (seg_pred > 0).nonzero()
         slice_idx = int(tumor_voxels[:, slice_axis].float().mean().item()) if len(tumor_voxels) else d // 2
@@ -113,9 +140,10 @@ def generate_report(
 
     seg_overlay = overlay_mask_on_slice(base_slice, take_slice(seg_pred))
     uncertainty_slice = take_slice(uncertainty_map)
-    gradcam_slice = take_slice(gradcam_map)
 
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    n_panels = 4 if has_classifier else 3
+    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5))
+
     axes[0].imshow(base_slice, cmap="gray")
     axes[0].set_title("Input (T1)")
     axes[1].imshow(seg_overlay)
@@ -127,13 +155,16 @@ def generate_report(
     im2 = axes[2].imshow(uncertainty_slice, cmap="inferno", alpha=0.6)
     axes[2].set_title("Epistemic uncertainty\n(brighter = model less sure)")
     fig.colorbar(im2, ax=axes[2], fraction=0.046)
-    axes[3].imshow(base_slice, cmap="gray")
-    im3 = axes[3].imshow(gradcam_slice, cmap="jet", alpha=0.5)
-    axes[3].set_title(
-        f"Grad-CAM: {class_names[predicted_class]}\n"
-        f"{conf_pct:.1f}% +/- {half_width_pct:.1f}%"
-    )
-    fig.colorbar(im3, ax=axes[3], fraction=0.046)
+
+    if has_classifier:
+        gradcam_slice = take_slice(gradcam_map)
+        axes[3].imshow(base_slice, cmap="gray")
+        im3 = axes[3].imshow(gradcam_slice, cmap="jet", alpha=0.5)
+        axes[3].set_title(
+            f"Grad-CAM: {class_names[predicted_class]}\n"
+            f"{confidence_pct:.1f}% +/- {half_width_pct:.1f}%"
+        )
+        fig.colorbar(im3, ax=axes[3], fraction=0.046)
 
     for ax in axes:
         ax.axis("off")
@@ -142,10 +173,10 @@ def generate_report(
     return ReportResult(
         segmentation=seg_pred.cpu(),
         tumor_volumes_cm3=tumor_volumes_cm3,
-        predicted_class=predicted_class,
-        confidence_pct=conf_pct,
-        confidence_half_width_pct=half_width_pct,
         uncertainty_map=uncertainty_map.cpu(),
-        gradcam_map=gradcam_map.cpu(),
         figure=fig,
+        predicted_class=predicted_class,
+        confidence_pct=confidence_pct,
+        confidence_half_width_pct=half_width_pct,
+        gradcam_map=gradcam_map.cpu() if gradcam_map is not None else None,
     )
