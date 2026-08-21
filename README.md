@@ -92,6 +92,7 @@ flowchart TD
 ```
 config.yaml                  all hyperparameters in one place
 requirements.txt
+app.py                       Streamlit demo (see Demo section below)
 
 src/
   data/dataset.py            BraTS case discovery + MONAI transforms (nifti and h5_slices formats)
@@ -112,6 +113,7 @@ scripts/
   evaluate.py                 full-volume Dice evaluation on the held-out split
   generate_report.py          run one case through the full pipeline, save the report figure
   generate_preview_assets.py  regenerate this README's illustrative images (no data needed)
+  export_demo_cases.py        export held-out cases for the Streamlit demo's example-case dropdown
 
 tests/                         synthetic-tensor sanity tests (no BraTS data required)
 config.yaml                    full-scale config (h5_slices format by default)
@@ -203,6 +205,29 @@ python scripts/train_segmentation.py --config config_cpu_smoketest.yaml
 
 All hyperparameters (patch size, batch size, learning rate, dropout, MC-sample count,
 data format/path, etc.) live in `config.yaml` — edit that rather than script flags.
+
+## Demo (Streamlit app)
+
+An interactive local demo — pick a scan, run real segmentation + uncertainty
+inference, scrub through slices, compare against ground truth.
+
+```bash
+# one-time: export a handful of held-out cases for the "example case" dropdown
+# (not committed to the repo -- built locally from data you already downloaded)
+python scripts/export_demo_cases.py --config config.yaml --n_cases 5
+
+streamlit run app.py
+```
+
+Two ways to get a scan in:
+- **Example case** — pick from the exported held-out cases; shows the model's
+  prediction next to the real ground truth and per-region Dice for that case.
+- **Upload your own scan** — four NIfTI files (FLAIR, T1, T1ce, T2). Runs through the
+  same MONAI preprocessing pipeline used everywhere else in this repo.
+
+Requires `checkpoints/segmentation/best.pt` to exist (train it first, or use your own
+checkpoint at that path). No classifier ships with this project (see the scope note
+above), so the demo shows segmentation + voxel-level uncertainty only.
 
 ## Why uncertainty and explainability matter here
 

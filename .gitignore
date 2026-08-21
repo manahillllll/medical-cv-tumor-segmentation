@@ -1,6 +1,7 @@
 /data/
 /checkpoints/
 /outputs/
+/app_data/
 *.nii
 *.nii.gz
 __pycache__/
